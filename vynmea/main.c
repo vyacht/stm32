@@ -16,7 +16,6 @@
 #include "stm32f10x.h"
 #include "stm32f10x_can.h"
 #include "main.h"
-#include "term_io.h"
 #include "comm.h"
 #include "fifo.h"
 #include "uart.h"
