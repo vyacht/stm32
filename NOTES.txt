@@ -1,0 +1,14 @@
+./st-flash write /home/bo/prg/stm32/vynmea/FLASH_RUN/project.bin 0x08000000
+
+openocd -f ./tcl/interface/olimex-arm-usb-tiny-h.cfg -f ./tcl/board/olimex_stm32_h103.cfg
+
+openocd -f ./tcl/interface/olimex-arm-usb-tiny-h.cfg -f ./tcl/board/olimex_stm32_h103.cfg -c init -c halt -c targets -c "reset halt"
+openocd -f ./tcl/interface/olimex-arm-usb-tiny-h.cfg -f ./tcl/board/olimex_stm32_h103.cfg -c init -c "reset halt" -c targets -c "flash write_image erase //home/bo/prg/stm32/stm32_chan_fat/project/FLASH_RUN/project.elf" -c "reset run" -c "shutdown"
+
+REFERENCES:
+
+http://fun-tech.se/stm32/OpenOCD/gdb.php
+
+just example:
+openocd -d2 -f "scripts/interface/olimex-arm-usb-tiny-h.cfg" -f "scripts/target/stm32.cfg" -c init -c halt -c targets -c "flash write_image erase image.elf" -c "verify_image image.elf" -c "reset run" -c shutdown
+
