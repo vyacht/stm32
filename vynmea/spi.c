@@ -65,14 +65,82 @@ fifo_t spiFifo;
 volatile uint8_t rxCmd;
 uint8_t spiTxBuffer[12];
 
+//                       meta      pgn                 pid
+/*
+uint8_t trxBuffer1[] = {  0x02,  43,0x00,0x01,0xf8,0x06,0x00,0x00,0x00,0xff,
+                      0xb0,0xff,0xff,0x70,0x59,0x00,
+		      0x13,0x00,0xba,0xe4,0x59,0x2a,0x9b,
+		      0x7b,0x07,0x00,0xd2,0x2d,0x21,0x57,
+		      0x03,0xd1,0x03,0xff,0xff,0xff,0xff,
+		      0xff,0xff,0xff,0x7f,0x10,0xfc,0xff,
+		      0xff,0x7f,0xff,0x7f,0xff,0xff,0xff,
+			 0x7f,0xff};
+*/
+
+volatile uint8_t trxBuffer[]  =  "__abcdefghijklmnopqrstuvwxyz";
+volatile uint8_t trxBuffer1[]  =  "__ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/*
+volatile uint8_t * trxBuffer[]  = { 
+  "__ABCDEFGHIJKLMNOPQRSTUVWXYZ"  
+};
+*/
+
+uint8_t buffercnt = 0;
+
 void spi_dataUnsignal(void);
  
+void spi_configuration() {
+
+  SPI_InitTypeDef SPI_InitStructure;
+
+  SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_16;
+  SPI_InitStructure.SPI_CPHA = SPI_CPHA_2Edge;
+  SPI_InitStructure.SPI_CPOL = SPI_CPOL_High;
+  SPI_InitStructure.SPI_CRCPolynomial = 7;
+  SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
+  SPI_InitStructure.SPI_Direction = SPI_Direction_2Lines_FullDuplex;
+  SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
+  SPI_InitStructure.SPI_Mode = SPI_Mode_Slave;
+  SPI_InitStructure.SPI_NSS = SPI_NSS_Hard;
+  SPI_Init(SPI1, &SPI_InitStructure);
+
+  SPI_CalculateCRC(SPI1, DISABLE);
+ 
+  
+  SPI_Cmd(SPI1, ENABLE);
+
+  // DMA Channel 3 - SPI TX
+  DMA_InitTypeDef DMA_InitStructure;
+  DMA_InitStructure.DMA_BufferSize = sizeof(trxBuffer);
+  DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralDST;
+  DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
+  DMA_InitStructure.DMA_MemoryBaseAddr = (uint32_t)&(trxBuffer[0]);
+  DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+  DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
+  DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
+  DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&SPI1->DR;
+  DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+  DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+  DMA_InitStructure.DMA_Priority = DMA_Priority_High;
+  DMA_Init(DMA1_Channel3, &DMA_InitStructure);
+ 
+  DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, DISABLE);
+  SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Tx, DISABLE);
+  //  SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Rx, ENABLE);
+
+  DMA_Cmd(DMA1_Channel3, ENABLE);
+
+}
+
 void spi_create(SPI_TypeDef * SPIx, GPIO_TypeDef * CS_GPIOx, uint16_t CS_GPIO_Pin_x){
   SPI_Module = SPIx;
   CS_GPIO = CS_GPIOx;
   CS_GPIO_Pin = CS_GPIO_Pin_x;
 
   fifo_init(&spiFifo);
+
+  trxBuffer[0] = 10;
 
   spiRxCounter = 0;
 
@@ -231,7 +299,7 @@ void spi_reset() {
 
   UART_printf(0, "SPI reset\n");
 
-  spi_disableTxInterrupt();
+  //  spi_disableTxInterrupt();
   spi_dataUnsignal();
 
   rxCmd = 0x00;
@@ -246,7 +314,31 @@ void spi_reset() {
   spiLength = 0;
   spiFifo.out = spiOldOut = spiIn;
 
+
   resetPending = 1;
+}
+
+void spi_handleDMA1Ch3Interrupt(void){
+
+  if(DMA_GetFlagStatus(DMA1_FLAG_TC3) != RESET)
+    {
+      //Clear the interrupt flag
+      DMA_ClearFlag(DMA1_FLAG_TC3);
+  
+      while(SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_TXE) == RESET);  //wait until TXE=1
+      while(SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_BSY) != RESET);  //wait until BSY=0
+      //while(DMA_GetFlagStatus(DMA1_FLAG_TC2) == RESET); //also wait until the DMA transfer for reception is finished
+  
+      //Disable the interrupt when the transfer is complete
+            DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, DISABLE);
+      //Disable the DMA transfers
+      //SPI_I2S_DMACmd(SPI1,SPI_I2S_DMAReq_Tx,DISABLE);
+            SPI_I2S_DMACmd(SPI1,SPI_I2S_DMAReq_Rx,DISABLE);
+  
+	    //DMA_Cmd(DMA1_Channel3, DISABLE);
+      rxCmd = 0x00;
+
+    }
 }
 
 void spi_handleSPI1Interrupt(void){
@@ -269,29 +361,38 @@ void spi_handleSPI1Interrupt(void){
     } else if((c & READ) || (c & WRITE)) {
 
       rxCmd = c;
-      spi_enableTxInterrupt();
-      
+
       if(rxCmd & HEADER) {
 
         spiTxCounter = 0; // reset tx read counter
 
-	spiMaxOut = spiIn;
+        //spiLength = spiMaxOut - spiFifo.out;
+	spiLength = sizeof(trxBuffer);
 
-	//        if(spiOldOut + spiLength != spiFifo.out) {
-	//  ITM_SendChar('!');
-	//  ITM_SendChar('\n');
-	  /*	  UART_printf(0, "! oo = %lu, l= %lu, o= %lu, i= %lu\n", 
-		      spiOldOut, spiLength, spiFifo.out, spiMaxOut);
-	  */
-	//}
+	trxBuffer[0] = spiLength - 2;
+	trxBuffer1[0] = spiLength - 2;
 
-        spiLength = spiMaxOut - spiFifo.out;
-        //spiOldOut = spiFifo.out;
+	DMA1_Channel3->CNDTR = sizeof(trxBuffer1);
+	DMA1_Channel3->CMAR = (uint32_t)&trxBuffer1[0];
+        buffercnt++;
 
+	SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Tx, ENABLE);
+
+	//Configure the tx DMA to interrupt when the transfer is complete
+	DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, ENABLE);
+	//DMA_Cmd(DMA1_Channel3, ENABLE);
+
+	ITM_SendChar('h');
+	ITM_SendChar('\n');
+
+      } else if(rxCmd & DATA) {
+
+	//	spi_disableTxInterrupt();
       }
     }
   } 
 
+  /*
   if(SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_TXE) == SET) {
 
     // TODO: timeout to ensure that we do not hang in an TX loop forever 
@@ -300,35 +401,26 @@ void spi_handleSPI1Interrupt(void){
     if(rxCmd & READ) {
 
       if(rxCmd & DATA) {
-
-	if(spiFifo.out < spiMaxOut) {
-
-	  fifo_get(&spiFifo, &c);
-	  SPI_I2S_SendData(SPI1, c);
-
-	} else {
-
-	  spi_disableTxInterrupt();
-	  rxCmd = 0x00;
-
-	}
+	ITM_SendChar(rxCmd); ITM_SendChar('\n');
       }
+      assert_param((rxCmd & DATA) == 0);
 
       if(rxCmd & HEADER) {
 
 	if(spiTxCounter < 1) {
 	  SPI_I2S_SendData(SPI1, (uint16_t)spiLength);
+	  spi_disableTxInterrupt();
 	  spiTxCounter++;
 
 	} else {
-
+  */
 	  /* disable interrupt even after header read
 	   *
 	   * if we get an accidental zero length read w/o data, "client" may exit
 	   * leaving us in a state with enabled interrupt which loops and then starvs
 	   * potentially all other interrupts
 	   */
-	  spiTxCounter++;
+  /*	  spiTxCounter++;
 	  spi_disableTxInterrupt();
 	  spi_dataUnsignal();
 	  rxCmd = 0x00;
@@ -338,6 +430,7 @@ void spi_handleSPI1Interrupt(void){
       } 
     }
   }
+  */
 }
 
 

@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include "stm32f10x.h"
 #include "stm32f10x_can.h"
+#include "stm32f10x_dma.h"
 #include "main.h"
 #include "term_io.h"
 #include "comm.h"
@@ -29,8 +30,6 @@
 #include "nmea0183.h"
 
 /* Private variables ---------------------------------------------------------*/
-USART_InitTypeDef USART_InitStructure;
-
 uint8_t     CAN_RxRdy; 
 Queue queue;
 fifo_t uart_fifo[2];
@@ -105,8 +104,8 @@ int main(void)
 
         CAN_Configuration();
 
-        SPI_Configuration();
-
+        spi_configuration();
+	
         UART_Configuration();
 
 	/* Turn on/off LED(s) */
@@ -222,6 +221,8 @@ void UART_Config(USART_TypeDef* USARTx, uint32_t speed) {
      - Hardware flow control disabled (RTS and CTS signals)
      - Receive and transmit enabled
   */
+  USART_InitTypeDef USART_InitStructure;
+  
   USART_InitStructure.USART_BaudRate = speed;
   USART_InitStructure.USART_WordLength = USART_WordLength_8b;
   USART_InitStructure.USART_StopBits = USART_StopBits_1;
@@ -240,25 +241,6 @@ void UART_Configuration() {
 
   UART_Config(USART3, 115200);
 
-}
-
-void SPI_Configuration() {
-  SPI_InitTypeDef SPI_InitStructure;
-
-  SPI_InitStructure.SPI_BaudRatePrescaler = SPI_BaudRatePrescaler_16;
-  SPI_InitStructure.SPI_CPHA = SPI_CPHA_2Edge;
-  SPI_InitStructure.SPI_CPOL = SPI_CPOL_High;
-  SPI_InitStructure.SPI_CRCPolynomial = 7;
-  SPI_InitStructure.SPI_DataSize = SPI_DataSize_8b;
-  SPI_InitStructure.SPI_Direction = SPI_Direction_2Lines_FullDuplex;
-  SPI_InitStructure.SPI_FirstBit = SPI_FirstBit_MSB;
-  SPI_InitStructure.SPI_Mode = SPI_Mode_Slave;
-  SPI_InitStructure.SPI_NSS = SPI_NSS_Hard;
-  SPI_Init(SPI1, &SPI_InitStructure);
-
-  SPI_CalculateCRC(SPI1, DISABLE);
- 
-  SPI_Cmd(SPI1, ENABLE);
 }
 
 void CAN_Configuration() {
@@ -325,6 +307,11 @@ void USART3_IRQHandler(void)
   UART_handleUARTInterrupt(USART3, &uart3_fifo);
 }
 
+void DMA1_Channel3_IRQHandler(void){
+  spi_handleDMA1Ch3Interrupt();
+  DMA_ClearFlag(DMA1_FLAG_TC3);
+}
+
 /*******************************************************************************
 * Function Name  : PeriphConfiguration
 * Description    : Configures the different system clocks.
@@ -345,6 +332,8 @@ void Periph_Configuration(void)
   RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
   RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOC, ENABLE);
   RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+  RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
 
   /* Enable GPIO_LED clock */
   // RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIO_LED, ENABLE);
@@ -514,6 +503,12 @@ void NVIC_Configuration(void)
   nvic.NVIC_IRQChannel = USART3_IRQn;
   nvic.NVIC_IRQChannelPreemptionPriority = 1;
   nvic.NVIC_IRQChannelSubPriority = 1;
+  nvic.NVIC_IRQChannelCmd = ENABLE;
+  NVIC_Init(&nvic);
+
+  nvic.NVIC_IRQChannel = DMA1_Channel3_IRQn;
+  nvic.NVIC_IRQChannelPreemptionPriority = 0;
+  nvic.NVIC_IRQChannelSubPriority = 0;
   nvic.NVIC_IRQChannelCmd = ENABLE;
   NVIC_Init(&nvic);
 }
