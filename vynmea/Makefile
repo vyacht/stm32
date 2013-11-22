@@ -68,7 +68,7 @@ OUTDIR = $(RUN_MODE)
 TARGET = project
 
 # Utility variables
-APPLIBDIR    = ./Libraries
+APPLIBDIR    = ../Libraries
 STMLIBDIR    = $(APPLIBDIR)
 STMSPDDIR    = $(STMLIBDIR)/STM32F10x_StdPeriph_Driver
 STMSPDSRCDIR = $(STMSPDDIR)/src
@@ -112,8 +112,6 @@ SRC += $(STMSPDSRCDIR)/stm32f10x_pwr.c
 SRC += $(STMSPDSRCDIR)/stm32f10x_dma.c
 SRC += $(STMSPDSRCDIR)/stm32f10x_tim.c
 SRC += $(STMSPDSRCDIR)/misc.c
-## EEprom Emulation AppNote Code
-SRC += $(STMEEEMULSRCDIR)/eeprom.c
 
 
 # List C source files here which must be compiled in ARM-Mode (no -mthumb).
