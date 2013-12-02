@@ -285,12 +285,37 @@ static void packet_accept(struct gps_packet_t *lexer, int packet_type)
 /* packet grab succeeded, move to output buffer */
 {
     size_t packetlen = lexer->inbufptr - lexer->inbuffer;
-    dbg_printf(0, "Packet type %d accepted %u = %s\n",
+    lexer->type = packet_type;
+    spi_writeNmea0183(lexer);
+
+    if(packet_type == BAD_PACKET) {
+
+      UART_printf(0, "Packet type %d accepted %u = %s\n",
 		    packet_type, packetlen,
 			lexer->inbuffer);
 
-    lexer->type = packet_type;
-    spi_writeNmea0183(lexer);
+      char * buf = lexer->inbuffer;
+      int ret = 0;
+      while(ret < MAX_PACKET_LEN)  {
+	int i = 0;
+	for (i = 0; i < 8; i++) {
+	  if(ret + i < MAX_PACKET_LEN)
+	    UART_printf(0, "0x%02X ", (uint8_t)buf[ret + i]);
+	  else
+	    UART_printf(0, "0x00 ");
+	}
+	printf(" : ");
+	for (i = 0; i < 8; i++) {
+	  if(ret + i < MAX_PACKET_LEN)
+	    UART_printf(0, "%c", buf[ret + i] < 127 && buf[ret + i] > 31 ? buf[ret + i] : '.');
+	  else
+	    UART_printf(0, ".");
+	}
+	ret += 8;
+	UART_printf(0, "\n");
+      }
+      UART_printf(0, "\n");
+    }
 }
 
 static void packet_discard(struct gps_packet_t *lexer)
@@ -326,7 +351,7 @@ void packet_parse(struct gps_packet_t *lexer)
      };
 
      nextstate(lexer, c);
-     dbg_printf(0, "character '%c' [%02x], new state: %s\n",
+     UART_printf(0, "character '%c' [%02x], new state: %s\n",
 		    (isprint(c) ? c : '.'), c,
 		    state_table[lexer->state]);
      if (lexer->state == GROUND_STATE) {

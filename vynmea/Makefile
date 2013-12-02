@@ -42,7 +42,8 @@ USE_THUMB_MODE = YES
 # - BOARD just passed as define (don't used '-' characters)
 MCU      = cortex-m3
 CHIP     = STM32F10x_128k_20k
-F_XTAL   = 8000000
+#F_XTAL   = 8000000
+F_XTAL   = 25000000
 SYSCLOCK_CL = SYSCLK_FREQ_72MHz=72000000
 
 # *** This example only supports "FLASH_RUN" ***
@@ -110,7 +111,6 @@ SRC += $(STMSPDSRCDIR)/stm32f10x_rtc.c
 SRC += $(STMSPDSRCDIR)/stm32f10x_bkp.c
 SRC += $(STMSPDSRCDIR)/stm32f10x_pwr.c
 SRC += $(STMSPDSRCDIR)/stm32f10x_dma.c
-SRC += $(STMSPDSRCDIR)/stm32f10x_tim.c
 SRC += $(STMSPDSRCDIR)/misc.c
 
 
@@ -374,7 +374,8 @@ LDFLAGS += $(patsubst %,-l%,$(EXTRA_LIBS))
 
 # Set linker-script name depending on selected run-mode and chip
 ifeq ($(RUN_MODE),RAM_RUN)
-LDFLAGS +=-T$(LINKERSCRIPTPATH)/$(CHIP)_ram.ld
+#LDFLAGS +=-T$(LINKERSCRIPTPATH)/$(CHIP)_ram.ld
+LDFLAGS +=-Ttarget_f103rb_ram.ld
 else 
 LDFLAGS +=-T$(LINKERSCRIPTPATH)/$(CHIP)_flash.ld
 endif
@@ -506,7 +507,7 @@ endif
 %.hex: %.elf
 	@echo $(MSG_LOAD_FILE) $@
 	$(OBJCOPY) -O ihex $< $@
-	
+
 # Create final output file in raw binary format from ELF output file (.bin)
 %.bin: %.elf
 	@echo $(MSG_LOAD_FILE) $@

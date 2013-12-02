@@ -20,6 +20,7 @@
 // package types
 #define PKG_TYPE_NMEA0183 0x01
 #define PKG_TYPE_NMEA2000 0x02
+#define PKG_TYPE_BAD      0x08 // mark bad packets
 
 SPI_TypeDef * SPI_Module;
 GPIO_TypeDef * CS_GPIO;
@@ -31,26 +32,7 @@ volatile uint8_t spiRxCounter;
  */
 volatile uint32_t spiTxCounter;
 
-/* this keeps track of no of elements in the fifo buffer
-   unlike the in of the actual fifo implementation
-   this in is at packets limits
- */
-volatile uint32_t spiIn;
-
-// volatile uint32_t spiOut;
-
-volatile uint32_t spiMaxOut;
-
-volatile uint32_t spiOldOut;
-
-/* used during transmission to keep track of the current length
-   of buffer to transfer to the spi counterpart (master)
-   will be spiIn - spiOut
- */
-volatile uint32_t spiLength;
-
 volatile uint8_t resetPending;
-
 
 uint32_t resetCounter;
 uint32_t packetFastCounter;
@@ -61,32 +43,37 @@ uint32_t packetErrorCounter;
           01234
    PGN will be stored in hi byte first
 */
-fifo_t spiFifo;
+
 volatile uint8_t rxCmd;
-uint8_t spiTxBuffer[12];
 
-//                       meta      pgn                 pid
-/*
-uint8_t trxBuffer1[] = {  0x02,  43,0x00,0x01,0xf8,0x06,0x00,0x00,0x00,0xff,
-                      0xb0,0xff,0xff,0x70,0x59,0x00,
-		      0x13,0x00,0xba,0xe4,0x59,0x2a,0x9b,
-		      0x7b,0x07,0x00,0xd2,0x2d,0x21,0x57,
-		      0x03,0xd1,0x03,0xff,0xff,0xff,0xff,
-		      0xff,0xff,0xff,0x7f,0x10,0xfc,0xff,
-		      0xff,0x7f,0xff,0x7f,0xff,0xff,0xff,
-			 0x7f,0xff};
-*/
+#define MAX_SPI_BUFFER_SIZE 256
+#define MAX_SPI_FIFO_SIZE 2
 
-volatile uint8_t trxBuffer[]  =  "__abcdefghijklmnopqrstuvwxyz";
-volatile uint8_t trxBuffer1[]  =  "__ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+typedef struct __spi_buffer {
+        uint16_t        len;
+        uint8_t         data[MAX_SPI_BUFFER_SIZE];
+} spi_buffer_t;
 
-/*
-volatile uint8_t * trxBuffer[]  = { 
-  "__ABCDEFGHIJKLMNOPQRSTUVWXYZ"  
-};
-*/
 
-uint8_t buffercnt = 0;
+uint8_t spi_fifo_in;
+uint8_t spi_fifo_out;
+uint8_t spi_fifo_mask;
+spi_buffer_t spi_fifo_data[MAX_SPI_FIFO_SIZE];
+
+void spi_fifo_init() {
+  spi_fifo_in = spi_fifo_out = 0;
+  spi_fifo_mask = MAX_SPI_FIFO_SIZE - 1;
+}
+
+int spi_fifo_is_full()
+{
+  return (spi_fifo_in - spi_fifo_out) > spi_fifo_mask;
+}
+
+int spi_fifo_is_empty()
+{
+  return spi_fifo_in == spi_fifo_out;
+}
 
 void spi_dataUnsignal(void);
  
@@ -106,16 +93,15 @@ void spi_configuration() {
   SPI_Init(SPI1, &SPI_InitStructure);
 
   SPI_CalculateCRC(SPI1, DISABLE);
- 
-  
+   
   SPI_Cmd(SPI1, ENABLE);
 
   // DMA Channel 3 - SPI TX
   DMA_InitTypeDef DMA_InitStructure;
-  DMA_InitStructure.DMA_BufferSize = sizeof(trxBuffer);
+  DMA_InitStructure.DMA_BufferSize = sizeof(spi_fifo_data[0].len);
   DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralDST;
   DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
-  DMA_InitStructure.DMA_MemoryBaseAddr = (uint32_t)&(trxBuffer[0]);
+  DMA_InitStructure.DMA_MemoryBaseAddr = (uint32_t)(spi_fifo_data[0].data);
   DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
   DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
   DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
@@ -125,22 +111,23 @@ void spi_configuration() {
   DMA_InitStructure.DMA_Priority = DMA_Priority_High;
   DMA_Init(DMA1_Channel3, &DMA_InitStructure);
  
-  DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, DISABLE);
-  SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Tx, DISABLE);
   //  SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Rx, ENABLE);
+  SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Tx, ENABLE);
 
-  DMA_Cmd(DMA1_Channel3, ENABLE);
+  //Configure the tx DMA to interrupt when the transfer is complete
+  DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, ENABLE);
+
+  DMA_Cmd(DMA1_Channel3, DISABLE);
 
 }
 
 void spi_create(SPI_TypeDef * SPIx, GPIO_TypeDef * CS_GPIOx, uint16_t CS_GPIO_Pin_x){
+
   SPI_Module = SPIx;
   CS_GPIO = CS_GPIOx;
   CS_GPIO_Pin = CS_GPIO_Pin_x;
 
-  fifo_init(&spiFifo);
-
-  trxBuffer[0] = 10;
+  spi_fifo_init();
 
   spiRxCounter = 0;
 
@@ -148,14 +135,12 @@ void spi_create(SPI_TypeDef * SPIx, GPIO_TypeDef * CS_GPIOx, uint16_t CS_GPIO_Pi
 
   resetPending = 0;
 
-  //spiOut = 0;
-  spiOldOut = 0;
-  spiIn = 0;
-
   resetCounter = 0;
   packetFastCounter = 0;
   packetErrorCounter = 0;
+
   spi_dataUnsignal();
+
 }
  
 void spi_enableTxInterrupt(void){
@@ -183,36 +168,17 @@ void spi_dataUnsignal(void){
   //  ITM_SendChar('U'); ITM_SendChar('\n');
 }
  
-void spi_writeData(uint32_t val) {
-
-  fifo_put(&spiFifo, val >> 24);    
-  fifo_put(&spiFifo, val >> 16);    
-  fifo_put(&spiFifo, val >> 8);    
-  fifo_put(&spiFifo, val);    
-
-}
-
-void spi_writeBuffer(uint8_t * buf, uint8_t off, volatile uint32_t val) {
-
-  buf[off] = val >> 24;    
-  buf[off + 1] = val >> 16;    
-  buf[off + 2] = val >> 8;    
-  buf[off + 3] = val;    
-}
-
 void spi_writeNmea0183(struct gps_packet_t *lexer){
 
   uint8_t len = (uint32_t)(lexer->inbufptr - lexer->inbuffer);
 
-  if(resetPending) 
-    spiFifo.in = spiFifo.out;
+  if(resetPending)  {}
   resetPending = 0;
 
-  if((fifo_free(&spiFifo) < len + 2)) {
-    UART_printf(0, "NMEA 0183 REJ len = %u, org = %d, spiIn = %lu, spiOut= %lu\n", 
+  if(spi_fifo_is_full()) {
+    UART_printf(0, "NMEA 0183 REJ len = %u, org = %d\n", 
 		len,
-		lexer->origin,
-		spiIn, spiFifo.out);
+		lexer->origin);
     // wake-up call if queue is full doesn't do any harm
     if(!spi_dataSignaled()) {
       spi_dataSignal();
@@ -220,40 +186,36 @@ void spi_writeNmea0183(struct gps_packet_t *lexer){
     return;
   }
 
+  spi_buffer_t * s = &spi_fifo_data[spi_fifo_in & spi_fifo_mask];
 
-  unsigned long l = spiFifo.in;
+  s->data[0] = PKG_TYPE_NMEA0183 | (lexer->origin << 5);    
 
-  // package type and origin
-  fifo_put(&spiFifo, PKG_TYPE_NMEA0183);    
+  if(lexer->type == BAD_PACKET)
+    s->data[0] |= PKG_TYPE_BAD;    
 
-  fifo_put(&spiFifo, (uint8_t)len);         // package len
+  s->data[1] = (uint8_t)len;
+  memcpy(s->data + 2, (uint8_t *)lexer->inbuffer, len);
 
-  fifo_in(&spiFifo, (uint8_t *)lexer->inbuffer, len);    
+  s->len = len + 2;
 
-  spiIn = spiFifo.in; 
+  spi_fifo_in++;
 
-  UART_printf(0, "NMEA 0183 ADD len = %u + 2, org = %d, spiIn = %lu, spiOut= %lu\n", 
-	      len,
-	      lexer->origin,
-	      spiIn, spiFifo.out);
-
-  assert_param(l + len + 2 == spiFifo.in);
+  UART_printf(0, "NMEA 0183 ADD len = %u + 2, org = %d\n", 
+	      len, lexer->origin);
 
   spi_dataSignal();
 }
 
 void spi_writeNmea2000(nmea2000_packet * packet){
 
-  if(resetPending) 
-    spiFifo.in = spiFifo.out;
+  if(resetPending) {}
   resetPending = 0;
 
-  if(fifo_free(&spiFifo) < packet->outbuflen + 8 + 2)  {
-    UART_printf(0, "NMEA 2000 REJ #= %lu, pgn = %lu with len= %u + 8 + 2, spiIn = %lu, spiOut= %lu\n", 
+  if(spi_fifo_is_full())  {
+    UART_printf(0, "NMEA 2000 REJ #= %lu, pgn = %lu with len= %u + 8 + 2\n", 
 	      packet->packet_transfer_count,
 	      packet->pgn,
-	      packet->outbuflen,
-	      spiIn, spiFifo.out);
+	      packet->outbuflen);
 
     // wake-up call if queue is full doesn't do any harm
     if(!spi_dataSignaled()) {
@@ -262,35 +224,33 @@ void spi_writeNmea2000(nmea2000_packet * packet){
     return;
   }
 
-  unsigned long l = spiFifo.in;
+  spi_buffer_t * s = &spi_fifo_data[spi_fifo_in & spi_fifo_mask];
 
   // package type and origin
-  fifo_put(&spiFifo, PKG_TYPE_NMEA2000 | (0 << 5));    
+  s->data[0] = PKG_TYPE_NMEA2000 | (0 << 5);    
 
   //  fifo_put(&spiFifo, (uint8_t)packet->outbuflen);         // package len
-  fifo_put(&spiFifo, (uint8_t)43);         // package len
+  s->data[1] = (uint8_t)43;         // package len
 
-  fifo_put(&spiFifo, packet->pgn >> 24);    
-  fifo_put(&spiFifo, packet->pgn >> 16);    
-  fifo_put(&spiFifo, packet->pgn >>  8);    
-  fifo_put(&spiFifo, packet->pgn);    
+  s->data[2] = packet->pgn >> 24;    
+  s->data[3] = packet->pgn >> 16;    
+  s->data[4] = packet->pgn >>  8;    
+  s->data[5] = packet->pgn;    
 
-  fifo_put(&spiFifo, packet->packet_transfer_count >> 24);    
-  fifo_put(&spiFifo, packet->packet_transfer_count >> 16);    
-  fifo_put(&spiFifo, packet->packet_transfer_count >>  8);    
-  fifo_put(&spiFifo, packet->packet_transfer_count);    
+  s->data[6] = packet->packet_transfer_count >> 24;    
+  s->data[7] = packet->packet_transfer_count >> 16;    
+  s->data[8] = packet->packet_transfer_count >>  8;    
+  s->data[9] = packet->packet_transfer_count;    
 
-  fifo_in(&spiFifo, packet->outbuffer, packet->outbuflen);    
+  memcpy(&(s->data[10]), packet->outbuffer, packet->outbuflen);    
   
-  spiIn = spiFifo.in; 
+  s->len = packet->outbuflen + 2 + 8;
+  spi_fifo_in++;
 
-  UART_printf(0, "NMEA 2000 ADD #= %lu, pgn = %lu with len= %u + 8, spiIn = %lu, spiOut= %lu\n", 
+  UART_printf(0, "NMEA 2000 ADD #= %lu, pgn = %lu with len= %u + 8\n", 
 	      packet->packet_transfer_count,
 	      packet->pgn,
-	      packet->outbuflen,
-	      spiIn, spiFifo.out);
-
-  assert_param(l + packet->outbuflen + 8 + 2 == spiFifo.in);
+	      packet->outbuflen);
 
   spi_dataSignal();
 }
@@ -299,21 +259,13 @@ void spi_reset() {
 
   UART_printf(0, "SPI reset\n");
 
-  //  spi_disableTxInterrupt();
+  spi_disableTxInterrupt();
   spi_dataUnsignal();
 
   rxCmd = 0x00;
 
   spiTxCounter = 0; // reset tx write counter
   spiRxCounter = 0; // reset tx write counter
-
-  assert_param(spiFifo.out <= spiFifo.in);
-  assert_param(spiIn <= spiFifo.in);
-
-  // dirty hack to consume all bytes up to next packet start
-  spiLength = 0;
-  spiFifo.out = spiOldOut = spiIn;
-
 
   resetPending = 1;
 }
@@ -326,18 +278,19 @@ void spi_handleDMA1Ch3Interrupt(void){
       DMA_ClearFlag(DMA1_FLAG_TC3);
   
       while(SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_TXE) == RESET);  //wait until TXE=1
-      while(SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_BSY) != RESET);  //wait until BSY=0
-      //while(DMA_GetFlagStatus(DMA1_FLAG_TC2) == RESET); //also wait until the DMA transfer for reception is finished
-  
-      //Disable the interrupt when the transfer is complete
-            DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, DISABLE);
-      //Disable the DMA transfers
-      //SPI_I2S_DMACmd(SPI1,SPI_I2S_DMAReq_Tx,DISABLE);
-            SPI_I2S_DMACmd(SPI1,SPI_I2S_DMAReq_Rx,DISABLE);
-  
-	    //DMA_Cmd(DMA1_Channel3, DISABLE);
-      rxCmd = 0x00;
+      //while(SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_BSY) != RESET);  //wait until BSY=0
 
+      //also wait until the DMA transfer for reception is finished
+      //while(DMA_GetFlagStatus(DMA1_FLAG_TC2) == RESET); 
+  
+      DMA_Cmd(DMA1_Channel3, DISABLE);
+      spi_dataUnsignal();
+
+      /*
+	Transfer is finished. We jump to the next buffer.
+       */
+      spi_fifo_out++;
+      rxCmd = 0x00;
     }
 }
 
@@ -364,73 +317,67 @@ void spi_handleSPI1Interrupt(void){
 
       if(rxCmd & HEADER) {
 
+	// move to other send buffer
         spiTxCounter = 0; // reset tx read counter
-
-        //spiLength = spiMaxOut - spiFifo.out;
-	spiLength = sizeof(trxBuffer);
-
-	trxBuffer[0] = spiLength - 2;
-	trxBuffer1[0] = spiLength - 2;
-
-	DMA1_Channel3->CNDTR = sizeof(trxBuffer1);
-	DMA1_Channel3->CMAR = (uint32_t)&trxBuffer1[0];
-        buffercnt++;
-
-	SPI_I2S_DMACmd(SPI1, SPI_I2S_DMAReq_Tx, ENABLE);
-
-	//Configure the tx DMA to interrupt when the transfer is complete
-	DMA_ITConfig(DMA1_Channel3, DMA_IT_TC, ENABLE);
-	//DMA_Cmd(DMA1_Channel3, ENABLE);
-
-	ITM_SendChar('h');
-	ITM_SendChar('\n');
+	spi_enableTxInterrupt();
 
       } else if(rxCmd & DATA) {
 
-	//	spi_disableTxInterrupt();
+	DMA1_Channel3->CNDTR = spi_fifo_data[spi_fifo_out && spi_fifo_mask].len;
+	DMA1_Channel3->CMAR = (uint32_t)&(spi_fifo_data[spi_fifo_out && spi_fifo_mask].data[0]);
+
+	DMA_Cmd(DMA1_Channel3, ENABLE);
+
       }
     }
   } 
 
-  /*
   if(SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_TXE) == SET) {
 
     // TODO: timeout to ensure that we do not hang in an TX loop forever 
     // if client doesn't complete its read (which is our transfer)
 
-    if(rxCmd & READ) {
-
-      if(rxCmd & DATA) {
-	ITM_SendChar(rxCmd); ITM_SendChar('\n');
-      }
-      assert_param((rxCmd & DATA) == 0);
-
-      if(rxCmd & HEADER) {
+    if(rxCmd & HEADER) {
 
 	if(spiTxCounter < 1) {
-	  SPI_I2S_SendData(SPI1, (uint16_t)spiLength);
+	  /* 
+	     We are making an active decision here and once
+	     that there is data to deliver by sending the 
+	     packet len.
+
+	     spi_fifo_out needs to be increased once transfer 
+	     stopped.
+	  */
+
+	  // buffer not empty
+	  if(spi_fifo_in != spi_fifo_out) {
+	    SPI_I2S_SendData(SPI1, spi_fifo_data[spi_fifo_out && spi_fifo_mask].len);
+	  } else {
+	    SPI_I2S_SendData(SPI1, 0);
+	  }
 	  spi_disableTxInterrupt();
 	  spiTxCounter++;
 
-	} else {
-  */
-	  /* disable interrupt even after header read
-	   *
-	   * if we get an accidental zero length read w/o data, "client" may exit
-	   * leaving us in a state with enabled interrupt which loops and then starvs
-	   * potentially all other interrupts
-	   */
-  /*	  spiTxCounter++;
+	} 
+
+	/* 
+	   else {
+	  // disable interrupt even after header read
+	   //
+	   // if we get an accidental zero length read w/o data, "client" may exit
+	   // leaving us in a state with enabled interrupt which loops and then starvs
+	   // potentially all other interrupts
+	   //
+  	  spiTxCounter++;
 	  spi_disableTxInterrupt();
 	  spi_dataUnsignal();
 	  rxCmd = 0x00;
 
 	}
+      */
 
-      } 
     }
   }
-  */
 }
 
 
